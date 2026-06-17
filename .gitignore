@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv/
+venv/
+.streamlit/secrets.toml
+_archive_extract/
+_demo_consts.txt
+*.zip
