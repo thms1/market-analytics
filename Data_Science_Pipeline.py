@@ -1,5 +1,5 @@
 """
-Telco Data Science Pipeline — Streamlit Web Application
+Telco Data Science Pipeline — Zambia Market Analytics
 ==========================================================
 End-to-end data science roadmap with a step-by-step UI:
 
@@ -12,6 +12,7 @@ End-to-end data science roadmap with a step-by-step UI:
   Step 7  Bias Detection          Learning curves – overfit / underfit
   Step 8  Recommendations         Product & campaign segmentation
   Step 9  Data Story              Executive + technical PowerPoint exports
+  Step 10 Market Intelligence     Zamtel vs MTN/Airtel KPI monitor & benchmarking
 
 Run:
     py -3.12 -m streamlit run Data_Science_Pipeline.py
@@ -59,7 +60,7 @@ warnings.filterwarnings("ignore")
 # PAGE CONFIG & STYLING
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Telco DS Pipeline",
+    page_title="Zambia Telco Analytics",
     page_icon="📡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -107,19 +108,82 @@ STEPS: tuple[tuple[int, str, str], ...] = (
     (7, "📉", "Bias Detection"),
     (8, "💡", "Recommendations"),
     (9, "🎯", "Data Story"),
+    (10, "📈", "Market Intelligence"),
 )
 
+# Zambia locale — currency (ZMW / Kwacha) and ID conventions
+CURRENCY_CODE = "ZMW"
+CURRENCY_LABEL = "Kwacha"
+BILL_SHOCK_KWACHA = 600          # monthly bill shock threshold (K)
+HIGH_VALUE_KWACHA = 400          # high-ARPU segment threshold (K)
+LOYAL_VALUE_KWACHA = 350         # loyal / high-value usage threshold (K)
+SAVE_RAR_KWACHA = 250            # revenue-at-risk save-list threshold (K)
+
+# Zambia mobile operators — portfolio focus on Zamtel benchmarking
+ZAMBIA_OPERATORS = ("Zamtel", "MTN Zambia", "Airtel Zambia")
+FOCUS_OPERATOR = "Zamtel"
+
+# Illustrative national market reference KPIs (Zambia mobile sector — for gap analysis)
+ZAMBIA_MARKET_REFERENCE = pd.DataFrame({
+    "operator": list(ZAMBIA_OPERATORS),
+    "subscribers_m": [4.8, 9.2, 8.0],
+    "market_share_pct": [22.0, 42.0, 36.0],
+    "monthly_arpu_kwacha": [175.0, 215.0, 198.0],
+    "churn_rate_pct": [3.4, 2.6, 2.9],
+    "nps": [30.0, 41.0, 36.0],
+    "csat": [3.8, 4.2, 4.0],
+    "network_availability_pct": [93.5, 97.2, 96.0],
+    "avg_latency_ms": [125.0, 95.0, 105.0],
+})
+
+
+def _fmt_kwacha(amount, decimals: int = 0) -> str:
+    """Format an amount in Zambian Kwacha (K)."""
+    if amount is None:
+        return "N/A"
+    try:
+        val = float(amount)
+        if np.isnan(val):
+            return "N/A"
+    except (TypeError, ValueError):
+        return "N/A"
+    if decimals == 0:
+        return f"K {val:,.0f}"
+    return f"K {val:,.2f}"
+
+
+def _zambia_nrc(rng: np.random.Generator) -> str:
+    """Zambian NRC format: NNNNNN/NN/N (National Registration Card)."""
+    return f"{rng.integers(100000, 999999):06d}/{rng.integers(10, 99):02d}/{rng.integers(1, 9)}"
+
+
+def _zambia_msisdn(rng: np.random.Generator, operator: str | None = None) -> str:
+    """Zambian mobile in E.164: 260 + 9-digit (operator-specific prefixes)."""
+    prefix_map = {
+        "Zamtel": ["95", "96"],
+        "MTN Zambia": ["76", "96"],
+        "Airtel Zambia": ["77", "97"],
+    }
+    if operator and operator in prefix_map:
+        prefix = rng.choice(prefix_map[operator])
+    else:
+        prefix = rng.choice(["95", "96", "76", "77", "97"])
+    return f"260{prefix}{rng.integers(1000000, 9999999):07d}"
+
+
 FIELD_DICT: tuple[tuple[str, str, str, str], ...] = (
-    ("subscriber_id", "Identity", "Text", "Unique subscriber key  e.g. SUB00001"),
-    ("account_number", "Identity", "Text", "Billing account reference"),
-    ("msisdn", "Identity", "Text", "Mobile number in E.164 format (2760xxxxxxx)"),
-    ("id_number", "Identity", "Text", "South African ID number (13 digits)"),
+    ("subscriber_id", "Identity", "Text", "Unique subscriber key  e.g. ZMB-SUB00001"),
+    ("account_number", "Identity", "Text", "Billing account  e.g. ZMB-ACC123456"),
+    ("msisdn", "Identity", "Text", "Mobile number E.164  e.g. 260971234567"),
+    ("id_number", "Identity", "Text", "Zambian NRC  format NNNNNN/NN/N"),
+    ("operator", "Market", "Text", "Mobile network operator — Zamtel / MTN Zambia / Airtel Zambia"),
+    ("report_month", "Market", "Text", "Reporting period YYYY-MM for KPI trend monitoring"),
     ("plan", "Subscription", "Text", "Price plan name"),
     ("contract_type", "Subscription", "Text", "Month-to-Month / One Year / Two Year"),
     ("network_type", "Subscription", "Text", "2G / 3G / 4G LTE / 5G / NB-IoT"),
     ("service_status", "Subscription", "Text", "Active / Suspended / Terminated / Porting Out"),
     ("acquisition_channel", "Subscription", "Text", "How subscriber was acquired"),
-    ("payment_method", "Subscription", "Text", "Credit Card / Debit Order / EFT / Voucher / Mobile Money"),
+    ("payment_method", "Subscription", "Text", "Debit Order / EFT / MTN Mobile Money / Airtel Money / Voucher"),
     ("region", "Subscription", "Text", "Province"),
     ("device_type", "Subscription", "Text", "Smartphone / Feature Phone / IoT Device etc."),
     ("node_id", "Network", "Text", "Base transceiver station ID"),
@@ -129,7 +193,7 @@ FIELD_DICT: tuple[tuple[str, str, str, str], ...] = (
     ("closed_date", "Dates", "DateTime", "Ticket / transaction closed  ISO 8601"),
     ("last_recharge_days_ago", "Tenure", "Integer", "Days since last recharge event"),
     ("sla_hours", "SLA", "Integer", "SLA target in hours  4/8/24/48"),
-    ("monthly_charges", "Billing", "Float", "Monthly invoice amount (ZAR) — may contain '-' tokens"),
+    ("monthly_charges", "Billing", "Float", f"Monthly invoice amount ({CURRENCY_CODE}) — may contain '-' tokens"),
     ("data_volume_mb", "Usage", "Float", "Total data consumed in MB — ~4% nulls injected"),
     ("data_overage_mb", "Usage", "Float", "Data consumed above plan bundle"),
     ("call_minutes", "Usage", "Float", "Voice call minutes — ~4% nulls injected"),
@@ -144,10 +208,10 @@ FIELD_DICT: tuple[tuple[str, str, str, str], ...] = (
     ("nps_score", "CX", "Integer", "Net Promoter Score  0-10"),
     ("csat_score", "CX", "Float", "Customer Satisfaction score  1.0-5.0"),
     ("app_logins_monthly", "CX", "Integer", "Self-service app logins per month"),
-    ("refund_amount", "Billing", "Float", "Refunds issued (ZAR)"),
+    ("refund_amount", "Billing", "Float", f"Refunds issued ({CURRENCY_CODE})"),
     ("payment_failures", "Billing", "Integer", "Failed payment attempts"),
     ("days_overdue", "Billing", "Integer", "Days payment is overdue"),
-    ("bill_shock_flag", "Billing", "Binary", "1 = bill > R800 or data overage > 1 GB"),
+    ("bill_shock_flag", "Billing", "Binary", f"1 = bill > K{BILL_SHOCK_KWACHA} or data overage > 1 GB"),
     ("paperless_billing", "Billing", "Binary", "1 = enrolled in e-billing"),
     ("plan_upgrades", "Loyalty", "Integer", "Number of plan upgrades"),
     ("reactivation_count", "Loyalty", "Integer", "Times reactivated after suspension"),
@@ -155,9 +219,11 @@ FIELD_DICT: tuple[tuple[str, str, str, str], ...] = (
 )
 
 PIPELINE_CHECKLIST: tuple[tuple[str, str, str], ...] = (
-    ("Step 1 Ingestion", "All 42 columns", "CSV upload / demo data load"),
+    ("Step 1 Ingestion", "All 44 columns", "CSV upload / demo data load"),
+    ("Step 1 Ingestion", "operator, report_month", "Zambia operator tagging + KPI period"),
     ("Step 2 EDA", "All numeric columns", "Distributions, correlation heatmap, class balance"),
-    ("Step 2 EDA", "plan, region, device_type", "Categorical bar + churn rate charts"),
+    ("Step 2 EDA", "tenure_months, acquisition_channel", "Cohort churn curves + channel quality"),
+    ("Step 2 EDA", "monthly_charges", "Revenue-at-risk preview by tenure cohort"),
     ("Step 2 EDA", "data_volume_mb, latency_ms", "Missing value map (4% injected)"),
     ("Step 3 Cleaning", "monthly_charges", "Auto-coerce '-' tokens to numeric"),
     ("Step 3 Cleaning", "N/A, null, None tokens", "Null-token normalisation (payment_method, contract_type, service_status)"),
@@ -167,7 +233,9 @@ PIPELINE_CHECKLIST: tuple[tuple[str, str, str], ...] = (
     ("Step 4 Engineering", "monthly_charges, data_volume_mb", "Derived: charge_per_mb"),
     ("Step 4 Engineering", "complaint_count, tenure_months", "Derived: complaint_rate"),
     ("Step 4 Engineering", "call_minutes, sms_count, data_volume_mb", "Derived: engagement_score"),
-    ("Step 4 Engineering", "tenure_months", "Derived: tenure_bucket (binned)"),
+    ("Step 4 Engineering", "monthly_charges, tenure_months", "Derived: estimated_clv, RFM-style scores"),
+    ("Step 4 Engineering", "payment_failures, bill_shock_flag", "Secondary target: payment_risk"),
+    ("Step 4 Engineering", "plan_upgrades, data_volume_mb", "Secondary target: upgrade_propensity"),
     ("Step 4 Engineering", "created_date, closed_date, sla_hours", "SLA status + resolution_hours"),
     ("Step 4 Engineering", "plan, region, device_type etc.", "One-hot encoding of categoricals"),
     ("Step 5 Training", "churn (target)", "Six models: LR, RF, GB, SVM, KNN, AdaBoost"),
@@ -176,8 +244,10 @@ PIPELINE_CHECKLIST: tuple[tuple[str, str, str], ...] = (
     ("Step 6 Evaluation", "churn_probability", "Probability distribution histogram"),
     ("Step 7 Bias Detection", "All features", "Learning curves: overfit / underfit / good fit"),
     ("Step 7 Bias Detection", "Train vs Test", "Train/Test AUC gap per model"),
-    ("Step 8 Recommendations", "churn_probability", "7 risk segments with product + campaign mapping"),
+    ("Step 5 Training", "payment_risk, upgrade targets", "Secondary RF models: billing risk + upsell propensity"),
+    ("Step 8 Recommendations", "revenue_at_risk, estimated_clv", "Save / Grow / Fix action segments + RAR dashboard"),
     ("Step 9 Data Story", "All stages", "Executive + technical PowerPoint decks + JSON export"),
+    ("Step 10 Market Intelligence", "operator, monthly_charges, churn", "Zamtel vs MTN/Airtel KPI monitor + national benchmark gap"),
 )
 
 _STATE_DEFAULTS: dict = {
@@ -191,10 +261,21 @@ _STATE_DEFAULTS: dict = {
     "X_test": None,
     "y_train": None,
     "y_test": None,
+    "y_train_payment": None,
+    "y_test_payment": None,
+    "y_train_upgrade": None,
+    "y_test_upgrade": None,
     "models": {},
     "model_results": {},
     "feature_importance": None,
     "recommendations_df": None,
+    "secondary_models": {},
+    "secondary_results": {},
+    "analytics_kpis": {},
+    "market_kpis": {},
+    "focus_operator": FOCUS_OPERATOR,
+    "imputer": None,
+    "scaler": None,
     "steps_done": set(),
     "eda_insights": [],
     "clean_log": [],
@@ -203,6 +284,7 @@ _STATE_DEFAULTS: dict = {
 }
 
 SAMPLE_CSV_PATH = Path(__file__).resolve().parent / "telco_sample_data.csv"
+LOGO_PATH = Path(__file__).resolve().parent / "analytics_logo.svg"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION STATE
@@ -215,9 +297,21 @@ for _k, _v in _STATE_DEFAULTS.items():
 # ─────────────────────────────────────────────────────────────────────────────
 # UI HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
+def _sidebar_logo() -> None:
+    """Render Analytics logo in sidebar (HTML embed avoids Streamlit SVG file decode issues)."""
+    if not LOGO_PATH.exists():
+        return
+    svg = LOGO_PATH.read_text(encoding="utf-8")
+    st.sidebar.markdown(
+        f'<div style="margin:0 0 12px 0;">{svg}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _nav_sidebar() -> None:
-    st.sidebar.markdown("## 📡 Telco DS Pipeline")
-    st.sidebar.caption("End-to-end Data Science Roadmap")
+    _sidebar_logo()
+    st.sidebar.markdown("## 📡 Zambia Telco Analytics")
+    st.sidebar.caption(f"Zamtel benchmarking · {CURRENCY_CODE} · KPI monitor")
 
     done = ss.steps_done
     for num, icon, label in STEPS:
@@ -336,58 +430,503 @@ def _safe_train_test_split(feat_df: pd.DataFrame, target: pd.Series):
     return train_test_split(feat_df, target, **split_kwargs)
 
 
+def _derive_business_kpis(df: pd.DataFrame) -> pd.DataFrame:
+    """Add CLV, RFM-style scores, and secondary prediction targets."""
+    out = df.copy()
+
+    if "monthly_charges" in out.columns and "tenure_months" in out.columns:
+        out["estimated_clv"] = (out["monthly_charges"] * out["tenure_months"]).round(2)
+
+    if "last_recharge_days_ago" in out.columns:
+        out["rfm_recency"] = (90 - out["last_recharge_days_ago"].clip(0, 90)) / 90
+    if "monthly_charges" in out.columns:
+        charges = out["monthly_charges"]
+        out["rfm_monetary"] = (charges - charges.min()) / (charges.max() - charges.min() + 1e-9)
+    if "data_volume_mb" in out.columns:
+        usage = out["data_volume_mb"]
+        out["rfm_frequency"] = (usage - usage.min()) / (usage.max() - usage.min() + 1e-9)
+
+    pay_fail = out.get("payment_failures", pd.Series(0, index=out.index)).fillna(0)
+    overdue = out.get("days_overdue", pd.Series(0, index=out.index)).fillna(0)
+    shock = out.get("bill_shock_flag", pd.Series(0, index=out.index)).fillna(0)
+    out["_target_payment_risk"] = ((pay_fail > 0) | (overdue > 0) | (shock == 1)).astype(int)
+
+    upgrades = out.get("plan_upgrades", pd.Series(0, index=out.index)).fillna(0)
+    data_mb = out.get("data_volume_mb", pd.Series(0, index=out.index)).fillna(0)
+    charges = out.get("monthly_charges", pd.Series(0, index=out.index)).fillna(0)
+    churn_col = out.get("churn", pd.Series(0, index=out.index))
+    churn_num = pd.to_numeric(churn_col, errors="coerce").fillna(0)
+    out["_target_upgrade"] = (
+        (upgrades > 0) | ((data_mb > 2500) & (charges < LOYAL_VALUE_KWACHA) & (churn_num == 0))
+    ).astype(int)
+
+    return out
+
+
+def _apply_feature_pipeline(feat_df: pd.DataFrame) -> pd.DataFrame:
+    """Apply stored imputer/scaler from Step 4 to a feature matrix."""
+    X = feat_df.copy()
+    if ss.imputer is not None:
+        cols = X.columns.tolist()
+        X = pd.DataFrame(ss.imputer.transform(X), columns=cols, index=X.index)
+    if ss.scaler is not None:
+        cols = X.columns.tolist()
+        X = pd.DataFrame(ss.scaler.transform(X), columns=cols, index=X.index)
+    return X
+
+
+def _train_secondary_rf(
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    y_train: pd.Series,
+    y_test: pd.Series,
+    label: str,
+) -> tuple[RandomForestClassifier | None, dict | None]:
+    """Train a Random Forest for a secondary binary target."""
+    y_train = _prepare_binary_target(y_train, label)
+    y_test = _prepare_binary_target(y_test, label)
+    if y_train is None or y_test is None:
+        return None, None
+    if y_train.nunique() < 2:
+        return None, None
+
+    model = RandomForestClassifier(n_estimators=150, random_state=42, class_weight="balanced", n_jobs=-1)
+    model.fit(X_train, y_train)
+    y_prob = model.predict_proba(X_test)[:, 1]
+    y_pred = model.predict(X_test)
+    metrics = {
+        "accuracy": accuracy_score(y_test, y_pred),
+        "precision": precision_score(y_test, y_pred, zero_division=0),
+        "recall": recall_score(y_test, y_pred, zero_division=0),
+        "f1": f1_score(y_test, y_pred, zero_division=0),
+        "roc_auc": roc_auc_score(y_test, y_prob),
+        "positive_rate": float(y_train.mean()),
+    }
+    return model, metrics
+
+
+def _action_segment(row) -> str:
+    """Map scores to Save / Grow / Fix / Monitor actions."""
+    churn_p = row.get("churn_probability", 0)
+    rar = row.get("revenue_at_risk", 0)
+    pay_p = row.get("payment_risk_probability", 0)
+    up_p = row.get("upgrade_probability", 0)
+
+    if churn_p >= 0.5 and rar >= SAVE_RAR_KWACHA:
+        return "Save — High Value at Risk"
+    if pay_p >= 0.45:
+        return "Fix — Billing & Payment Risk"
+    if up_p >= 0.45 and churn_p < 0.35:
+        return "Grow — Upsell Ready"
+    if churn_p >= 0.4:
+        return "Watch — Elevated Churn Risk"
+    return "Monitor — Stable"
+
+
+def _operator_col(df: pd.DataFrame) -> str | None:
+    """Return operator column name if present."""
+    if "operator" in df.columns:
+        return "operator"
+    return None
+
+
+def _compute_operator_kpis(df: pd.DataFrame, target_col: str = "churn") -> pd.DataFrame:
+    """Aggregate portfolio KPIs by Zambian mobile operator."""
+    op_col = _operator_col(df)
+    if op_col is None:
+        return pd.DataFrame()
+
+    work = df.copy()
+    work["_charges"] = pd.to_numeric(work.get("monthly_charges"), errors="coerce")
+    work["_churn"] = pd.to_numeric(work.get(target_col), errors="coerce")
+    work["_nps"] = pd.to_numeric(work.get("nps_score"), errors="coerce")
+    work["_csat"] = pd.to_numeric(work.get("csat_score"), errors="coerce")
+    work["_latency"] = pd.to_numeric(work.get("latency_ms"), errors="coerce")
+
+    g = work.groupby(op_col, observed=True)
+    out = g.size().reset_index(name="subscribers")
+    out = out.rename(columns={op_col: "operator"})
+    out["monthly_revenue"] = g["_charges"].sum().values
+    out["avg_arpu"] = g["_charges"].mean().values
+    if target_col in work.columns:
+        out["churn_rate"] = g["_churn"].mean().values
+        out["churn_rate_pct"] = (out["churn_rate"] * 100).round(2)
+    if "nps_score" in work.columns:
+        out["avg_nps"] = g["_nps"].mean().values
+    if "csat_score" in work.columns:
+        out["avg_csat"] = g["_csat"].mean().values
+    if "latency_ms" in work.columns:
+        out["avg_latency_ms"] = g["_latency"].mean().values
+    out["market_share_pct"] = (out["subscribers"] / out["subscribers"].sum() * 100).round(1)
+    return out
+
+
+def _compute_monthly_trends(df: pd.DataFrame, target_col: str = "churn") -> pd.DataFrame:
+    """KPI trends by report_month and operator."""
+    if "report_month" not in df.columns or _operator_col(df) is None:
+        return pd.DataFrame()
+
+    work = df.copy()
+    work["_charges"] = pd.to_numeric(work["monthly_charges"], errors="coerce")
+    work["_churn"] = pd.to_numeric(work.get(target_col), errors="coerce")
+    trend = (
+        work.groupby(["report_month", "operator"], observed=True)
+        .agg(
+            subscribers=("operator", "count"),
+            monthly_revenue=("_charges", "sum"),
+            avg_arpu=("_charges", "mean"),
+            churn_rate=("_churn", "mean"),
+        )
+        .reset_index()
+    )
+    trend["churn_rate_pct"] = (trend["churn_rate"] * 100).round(2)
+    return trend.sort_values("report_month")
+
+
+def _zamtel_gap_analysis(portfolio: pd.DataFrame) -> pd.DataFrame:
+    """Compare Zamtel portfolio KPIs against national market reference."""
+    if portfolio.empty or FOCUS_OPERATOR not in portfolio["operator"].values:
+        return pd.DataFrame()
+
+    ref = ZAMBIA_MARKET_REFERENCE.set_index("operator")
+    zam = portfolio.set_index("operator").loc[FOCUS_OPERATOR]
+
+    rows = []
+    metrics = [
+        ("monthly_arpu_kwacha", "avg_arpu", "ARPU (K)", True),
+        ("churn_rate_pct", "churn_rate_pct", "Churn Rate (%)", False),
+        ("nps", "avg_nps", "NPS", True),
+        ("csat", "avg_csat", "CSAT", True),
+        ("avg_latency_ms", "avg_latency_ms", "Latency (ms)", False),
+        ("market_share_pct", "market_share_pct", "Market Share (%)", True),
+    ]
+    for ref_col, port_col, label, higher_better in metrics:
+        if ref_col not in ref.columns or port_col not in zam:
+            continue
+        ref_val = float(ref.loc[FOCUS_OPERATOR, ref_col])
+        port_val = float(zam[port_col])
+        if np.isnan(port_val):
+            continue
+        gap = port_val - ref_val
+        if higher_better:
+            status = "Above benchmark" if gap >= 0 else "Below benchmark"
+        else:
+            status = "Above benchmark" if gap <= 0 else "Below benchmark"
+        rows.append({
+            "KPI": label,
+            "Zamtel (portfolio)": round(port_val, 2),
+            "National reference": round(ref_val, 2),
+            "Gap": round(gap, 2),
+            "Status": status,
+        })
+    return pd.DataFrame(rows)
+
+
+def _render_market_kpi_cards(kpis: pd.DataFrame, focus: str) -> None:
+    """Top-row KPI cards for a selected operator."""
+    if kpis.empty or focus not in kpis["operator"].values:
+        st.caption("Operator KPIs unavailable — ensure `operator` column is populated.")
+        return
+
+    row = kpis.loc[kpis["operator"] == focus].iloc[0]
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1:
+        _kpi("Subscribers", f"{int(row['subscribers']):,}")
+    with c2:
+        rev = row.get("monthly_revenue", 0)
+        _kpi("Monthly Revenue", _fmt_kwacha(rev), "green")
+    with c3:
+        _kpi("ARPU", _fmt_kwacha(row.get("avg_arpu", 0)), "purple")
+    with c4:
+        churn = row.get("churn_rate_pct", row.get("churn_rate", 0) * 100 if "churn_rate" in row else 0)
+        _kpi("Churn Rate", f"{churn:.1f}%", "orange")
+    with c5:
+        nps = row.get("avg_nps", np.nan)
+        _kpi("Avg NPS", f"{nps:.0f}" if pd.notna(nps) else "N/A")
+    with c6:
+        share = row.get("market_share_pct", 0)
+        _kpi("Portfolio Share", f"{share:.1f}%", "green")
+
+
+def _render_market_snapshot(df: pd.DataFrame, target_col: str, expanded: bool = False) -> None:
+    """Compact Zambia market KPI panel (Steps 1–2)."""
+    op_col = _operator_col(df)
+    if op_col is None:
+        with st.expander("🇿🇲 Zambia Market KPIs", expanded=expanded):
+            _warn(
+                "No `operator` column found. Upload data with Zamtel / MTN Zambia / Airtel Zambia "
+                "or use **Demo Data** for a Zambia-localised sample."
+            )
+        return
+
+    kpis = _compute_operator_kpis(df, target_col)
+    ss.market_kpis = kpis.to_dict("records")
+
+    with st.expander("🇿🇲 Zambia Market KPI Monitor", expanded=expanded):
+        focus = st.selectbox(
+            "Focus operator",
+            list(kpis["operator"]),
+            index=list(kpis["operator"]).index(FOCUS_OPERATOR)
+            if FOCUS_OPERATOR in kpis["operator"].values else 0,
+            key=f"market_focus_{expanded}",
+        )
+        ss.focus_operator = focus
+        _render_market_kpi_cards(kpis, focus)
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            fig_share = px.pie(
+                kpis, names="operator", values="subscribers",
+                title="Subscriber Base by Operator (portfolio)",
+                color="operator",
+                color_discrete_map={
+                    "Zamtel": "#00695c",
+                    "MTN Zambia": "#ffcc00",
+                    "Airtel Zambia": "#e53935",
+                },
+            )
+            st.plotly_chart(fig_share, use_container_width=True)
+        with col_b:
+            fig_arpu = px.bar(
+                kpis, x="operator", y="avg_arpu", text_auto=".0f",
+                title="Average ARPU by Operator (K)",
+                color="operator",
+                color_discrete_map={
+                    "Zamtel": "#00695c",
+                    "MTN Zambia": "#ffcc00",
+                    "Airtel Zambia": "#e53935",
+                },
+            )
+            st.plotly_chart(fig_arpu, use_container_width=True)
+
+        if focus == FOCUS_OPERATOR:
+            gap = _zamtel_gap_analysis(kpis)
+            if not gap.empty:
+                st.markdown(f"**{FOCUS_OPERATOR} vs National Market Reference**")
+                st.dataframe(gap, use_container_width=True, hide_index=True)
+                below = gap[gap["Status"] == "Below benchmark"]["KPI"].tolist()
+                if below:
+                    _warn(f"Gap areas for {FOCUS_OPERATOR}: **{', '.join(below)}**")
+                else:
+                    _ok(f"{FOCUS_OPERATOR} meets or exceeds all tracked national benchmarks in this portfolio.")
+
+
+def _render_operator_benchmark_charts(df: pd.DataFrame, target_col: str) -> None:
+    """Full operator comparison charts for Market Intelligence step."""
+    kpis = _compute_operator_kpis(df, target_col)
+    if kpis.empty:
+        st.warning("Operator benchmarking requires an `operator` column.")
+        return
+
+    st.subheader("Operator Benchmark — Zamtel vs MTN vs Airtel")
+    tab_port, tab_ref, tab_trend, tab_region = st.tabs(
+        ["Portfolio Comparison", "National Reference", "KPI Trends", "Regional View"]
+    )
+
+    with tab_port:
+        m1, m2 = st.columns(2)
+        metrics_long = kpis.melt(
+            id_vars=["operator"],
+            value_vars=[c for c in ["avg_arpu", "churn_rate_pct", "avg_nps", "avg_csat"] if c in kpis.columns],
+            var_name="metric",
+            value_name="value",
+        )
+        with m1:
+            fig_rev = px.bar(
+                kpis.sort_values("monthly_revenue", ascending=False),
+                x="operator", y="monthly_revenue", text_auto=".2s",
+                title="Monthly Revenue by Operator (portfolio)",
+                color="operator",
+                color_discrete_map={"Zamtel": "#00695c", "MTN Zambia": "#ffcc00", "Airtel Zambia": "#e53935"},
+            )
+            st.plotly_chart(fig_rev, use_container_width=True)
+        with m2:
+            fig_churn = px.bar(
+                kpis.sort_values("churn_rate_pct", ascending=True),
+                x="operator", y="churn_rate_pct", text_auto=".2f",
+                title="Churn Rate by Operator (%)",
+                color="churn_rate_pct", color_continuous_scale="RdYlGn_r",
+            )
+            st.plotly_chart(fig_churn, use_container_width=True)
+
+        fig_radar = px.line_polar(
+            metrics_long, r="value", theta="metric", color="operator", line_close=True,
+            title="Multi-KPI Operator Profile (portfolio normalised scale)",
+            color_discrete_map={"Zamtel": "#00695c", "MTN Zambia": "#ffcc00", "Airtel Zambia": "#e53935"},
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
+
+        gap = _zamtel_gap_analysis(kpis)
+        if not gap.empty:
+            st.markdown(f"### {FOCUS_OPERATOR} Gap Analysis (portfolio vs national reference)")
+            fig_gap = px.bar(
+                gap, x="KPI", y="Gap", color="Status",
+                color_discrete_map={"Above benchmark": "#2e7d32", "Below benchmark": "#c62828"},
+                title=f"{FOCUS_OPERATOR} KPI Gap vs National Benchmark",
+            )
+            st.plotly_chart(fig_gap, use_container_width=True)
+            st.dataframe(gap, use_container_width=True, hide_index=True)
+
+    with tab_ref:
+        st.caption(
+            "National reference figures are illustrative industry benchmarks for Zambia's mobile market "
+            "(millions of subscribers at national scale). Compare directionally against your portfolio KPIs."
+        )
+        ref = ZAMBIA_MARKET_REFERENCE.copy()
+        ref_display = ref.rename(columns={
+            "subscribers_m": "Subscribers (M, national)",
+            "monthly_arpu_kwacha": "ARPU (K)",
+            "churn_rate_pct": "Churn (%)",
+            "network_availability_pct": "Network Availability (%)",
+        })
+        st.dataframe(ref_display, use_container_width=True, hide_index=True)
+
+        ref_melt = ref.melt(
+            id_vars=["operator"],
+            value_vars=["market_share_pct", "monthly_arpu_kwacha", "churn_rate_pct", "nps"],
+            var_name="KPI", value_name="Value",
+        )
+        fig_ref = px.bar(
+            ref_melt, x="KPI", y="Value", color="operator", barmode="group",
+            title="National Market Reference by Operator",
+            color_discrete_map={"Zamtel": "#00695c", "MTN Zambia": "#ffcc00", "Airtel Zambia": "#e53935"},
+        )
+        st.plotly_chart(fig_ref, use_container_width=True)
+
+        if FOCUS_OPERATOR in kpis["operator"].values:
+            zam_row = kpis.loc[kpis["operator"] == FOCUS_OPERATOR].iloc[0]
+            ref_row = ref.loc[ref["operator"] == FOCUS_OPERATOR].iloc[0]
+            comp = pd.DataFrame([
+                {"Metric": "ARPU (K)", "Portfolio": zam_row.get("avg_arpu"), "National ref": ref_row["monthly_arpu_kwacha"]},
+                {"Metric": "Churn (%)", "Portfolio": zam_row.get("churn_rate_pct"), "National ref": ref_row["churn_rate_pct"]},
+                {"Metric": "NPS", "Portfolio": zam_row.get("avg_nps"), "National ref": ref_row["nps"]},
+                {"Metric": "Share (%)", "Portfolio": zam_row.get("market_share_pct"), "National ref": ref_row["market_share_pct"]},
+            ])
+            fig_comp = px.bar(
+                comp.melt(id_vars="Metric", var_name="Source", value_name="Value"),
+                x="Metric", y="Value", color="Source", barmode="group",
+                title=f"{FOCUS_OPERATOR}: Portfolio vs National Reference",
+            )
+            st.plotly_chart(fig_comp, use_container_width=True)
+
+    with tab_trend:
+        trend = _compute_monthly_trends(df, target_col)
+        if trend.empty:
+            st.info("Add a `report_month` column (YYYY-MM) to enable KPI trend monitoring.")
+        else:
+            t1, t2 = st.columns(2)
+            with t1:
+                fig_subs = px.line(
+                    trend, x="report_month", y="subscribers", color="operator", markers=True,
+                    title="Subscriber Base Trend by Operator",
+                    color_discrete_map={"Zamtel": "#00695c", "MTN Zambia": "#ffcc00", "Airtel Zambia": "#e53935"},
+                )
+                st.plotly_chart(fig_subs, use_container_width=True)
+            with t2:
+                fig_rev_t = px.line(
+                    trend, x="report_month", y="monthly_revenue", color="operator", markers=True,
+                    title="Monthly Revenue Trend (K)",
+                    color_discrete_map={"Zamtel": "#00695c", "MTN Zambia": "#ffcc00", "Airtel Zambia": "#e53935"},
+                )
+                st.plotly_chart(fig_rev_t, use_container_width=True)
+            fig_churn_t = px.line(
+                trend, x="report_month", y="churn_rate_pct", color="operator", markers=True,
+                title="Churn Rate Trend (%)",
+                color_discrete_map={"Zamtel": "#00695c", "MTN Zambia": "#ffcc00", "Airtel Zambia": "#e53935"},
+            )
+            st.plotly_chart(fig_churn_t, use_container_width=True)
+
+    with tab_region:
+        if "region" in df.columns and _operator_col(df):
+            reg = df.copy()
+            reg["_churn"] = pd.to_numeric(reg.get(target_col), errors="coerce")
+            reg["_charges"] = pd.to_numeric(reg["monthly_charges"], errors="coerce")
+            reg_kpi = (
+                reg.groupby(["region", "operator"], observed=True)
+                .agg(subscribers=("operator", "count"), revenue=("_charges", "sum"), churn=("_churn", "mean"))
+                .reset_index()
+            )
+            fig_reg = px.bar(
+                reg_kpi, x="region", y="subscribers", color="operator", barmode="group",
+                title="Subscribers by Province & Operator",
+                color_discrete_map={"Zamtel": "#00695c", "MTN Zambia": "#ffcc00", "Airtel Zambia": "#e53935"},
+            )
+            st.plotly_chart(fig_reg, use_container_width=True)
+        else:
+            st.info("Regional operator view requires `region` and `operator` columns.")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DEMO DATA
 # ─────────────────────────────────────────────────────────────────────────────
 def _demo_data(n: int = 2000) -> pd.DataFrame:
     """
-    Full-featured synthetic telco dataset with 42 columns covering:
-    Identity, Subscription, Usage, Network KPIs, Customer Experience,
+    Full-featured synthetic Zambia telco dataset with 44 columns covering:
+    Identity, Market, Subscription, Usage, Network KPIs, Customer Experience,
     Billing, Loyalty — plus injected nulls, bad tokens & duplicates
     to exercise every pipeline step.
     """
     rng = np.random.default_rng(42)
+    operators = list(ZAMBIA_OPERATORS)
+    op_weights = [0.34, 0.38, 0.28]  # portfolio skew toward Zamtel CRM extract
+    report_months = ["2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06"]
     plans = [
-        "Prepaid Basic", "Prepaid Smart", "Postpaid 199", "Postpaid 499",
-        "Postpaid 999", "IoT SIM", "Business Pro",
+        "Prepaid Basic", "Prepaid Smart", "Postpaid K199", "Postpaid K499",
+        "Postpaid K799", "IoT SIM", "Business Pro",
     ]
     regions = [
-        "Gauteng", "Western Cape", "KwaZulu-Natal", "Eastern Cape", "Limpopo",
-        "Mpumalanga", "North West", "Free State", "Northern Cape",
+        "Lusaka", "Copperbelt", "Southern", "Eastern", "Northern",
+        "North-Western", "Western", "Luapula", "Muchinga", "Central",
     ]
     devices = ["Smartphone", "Feature Phone", "IoT Device", "Tablet", "Router", "Wearable"]
     networks = ["4G LTE", "3G", "5G", "2G", "NB-IoT"]
     channels = ["Direct Sales", "Online Portal", "Retail Store", "Agent", "Referral"]
     contracts = ["Month-to-Month", "One Year", "Two Year"]
-    payments = ["Credit Card", "Debit Order", "EFT", "Voucher", "Mobile Money"]
+    payments = ["Debit Order", "EFT", "MTN Mobile Money", "Airtel Money", "Voucher"]
     statuses = ["Active", "Suspended", "Terminated", "Porting Out"]
     nodes = [
-        "BTS_JHB_001", "BTS_CPT_007", "BTS_DBN_003",
-        "BTS_PTA_012", "BTS_EL_005", "BTS_NM_009",
+        "BTS_LSK_001", "BTS_NDL_007", "BTS_KTW_003",
+        "BTS_LVN_012", "BTS_KAB_005", "BTS_CHP_009",
     ]
 
     idx = np.arange(n)
     base_date = datetime(2024, 1, 1)
+    operator_assign = rng.choice(operators, n, p=op_weights)
 
     tenure = rng.integers(1, 72, n)
     activation = [base_date + timedelta(days=int(rng.integers(0, 900))) for _ in idx]
     created = [a + timedelta(hours=int(rng.integers(1, 500))) for a in activation]
     closed = [c + timedelta(hours=int(rng.integers(1, 96))) for c in created]
 
-    monthly_charges = rng.uniform(199, 1200, n).round(2)
+    monthly_charges = rng.uniform(79, 850, n).round(2)
+    # Operator-specific portfolio characteristics for benchmarking
+    for op, adj in [("Zamtel", -35), ("MTN Zambia", 25), ("Airtel Zambia", 5)]:
+        mask = operator_assign == op
+        monthly_charges[mask] = (monthly_charges[mask] + adj).clip(50, 900)
     data_volume = rng.uniform(50, 8000, n).round(1)
     call_minutes = rng.uniform(10, 500, n).round(1)
     complaint_count = rng.integers(0, 6, n)
     churn = (
-        (complaint_count >= 3) | (monthly_charges > 900) | (data_volume < 200)
+        (complaint_count >= 3) | (monthly_charges > 650) | (data_volume < 200)
     ).astype(int)
     churn = np.where(rng.random(n) < 0.12, 1 - churn, churn)
+    # Zamtel slightly higher churn in synthetic portfolio
+    churn = np.where((operator_assign == "Zamtel") & (rng.random(n) < 0.06), 1, churn)
+
+    nps_base = rng.integers(0, 11, n)
+    latency_base = rng.uniform(80, 350, n).round(1)
+    for op, nps_adj, lat_adj in [("Zamtel", -4, 25), ("MTN Zambia", 3, -15), ("Airtel Zambia", 0, 5)]:
+        mask = operator_assign == op
+        nps_base[mask] = np.clip(nps_base[mask] + nps_adj, 0, 10)
+        latency_base[mask] = np.clip(latency_base[mask] + lat_adj, 60, 400)
 
     df = pd.DataFrame({
-        "subscriber_id": [f"SUB{i:05d}" for i in idx],
-        "account_number": [f"ACC{rng.integers(100000, 999999)}" for _ in idx],
-        "msisdn": [f"2760{rng.integers(1000000, 9999999)}" for _ in idx],
-        "id_number": [f"{rng.integers(1000000000000, 9999999999999)}" for _ in idx],
+        "subscriber_id": [f"ZMB-SUB{i:05d}" for i in idx],
+        "account_number": [f"ZMB-ACC{rng.integers(100000, 999999)}" for _ in idx],
+        "msisdn": [_zambia_msisdn(rng, op) for op in operator_assign],
+        "id_number": [_zambia_nrc(rng) for _ in idx],
+        "operator": operator_assign,
+        "report_month": rng.choice(report_months, n),
         "plan": rng.choice(plans, n),
         "contract_type": rng.choice(contracts, n),
         "network_type": rng.choice(networks, n),
@@ -411,19 +950,19 @@ def _demo_data(n: int = 2000) -> pd.DataFrame:
         "intl_call_minutes": np.where(rng.random(n) < 0.15, rng.uniform(0, 200, n).round(2), 0),
         "roaming_flag": rng.integers(0, 2, n),
         "avg_recharge_amount": np.where(
-            rng.random(n) < 0.4, rng.uniform(20, 200, n).round(2), 0
+            rng.random(n) < 0.4, rng.uniform(10, 150, n).round(2), 0
         ),
-        "latency_ms": rng.uniform(80, 350, n).round(1),
+        "latency_ms": latency_base,
         "signal_strength_dbm": rng.uniform(-110, -50, n).round(1),
         "complaint_count": complaint_count,
         "support_calls": rng.integers(0, 5, n),
-        "nps_score": rng.integers(0, 11, n),
+        "nps_score": nps_base,
         "csat_score": rng.uniform(1, 5, n).round(1),
         "app_logins_monthly": rng.integers(0, 30, n),
-        "refund_amount": np.where(rng.random(n) < 0.08, rng.uniform(10, 500, n).round(2), 0),
+        "refund_amount": np.where(rng.random(n) < 0.08, rng.uniform(10, 350, n).round(2), 0),
         "payment_failures": rng.integers(0, 4, n),
         "days_overdue": rng.integers(0, 45, n),
-        "bill_shock_flag": (monthly_charges > 800).astype(int),
+        "bill_shock_flag": (monthly_charges > BILL_SHOCK_KWACHA).astype(int),
         "paperless_billing": rng.integers(0, 2, n),
         "plan_upgrades": rng.integers(0, 3, n),
         "reactivation_count": rng.integers(0, 2, n),
@@ -436,7 +975,8 @@ def _demo_data(n: int = 2000) -> pd.DataFrame:
         mask = rng.random(n) < 0.04
         df.loc[mask, col] = np.nan
 
-    # Bad tokens
+    # Bad tokens (monthly_charges must be object dtype to hold '-')
+    df["monthly_charges"] = df["monthly_charges"].astype(object)
     bad_idx = rng.choice(n, 40, replace=False)
     df.loc[bad_idx[:15], "monthly_charges"] = "-"
     df.loc[bad_idx[15:25], "payment_method"] = "N/A"
@@ -457,12 +997,12 @@ def _demo_data(n: int = 2000) -> pd.DataFrame:
 def step_ingest() -> None:
     _step_header(
         1, "Data Ingestion",
-        "Upload your telecom dataset (CSV / Excel), download the ready-made sample CSV to test "
+        "Upload your Zambia telecom dataset (CSV / Excel), download the ready-made sample CSV to test "
         "all checklist items, or click **Use Demo Data** to load a synthetic 2,000-subscriber "
-        "dataset directly.",
+        "Zambia portfolio (Zamtel · MTN · Airtel) with KPI monitoring fields.",
     )
 
-    with st.expander("📋  Full Field Dictionary — 42 Telco Columns", expanded=False):
+    with st.expander("📋  Full Field Dictionary — 44 Telco Columns", expanded=False):
         fd = pd.DataFrame(FIELD_DICT, columns=["Column", "Category", "Type", "Description"])
         st.dataframe(fd, use_container_width=True, hide_index=True, height=420)
         cat_summary = (
@@ -487,7 +1027,7 @@ def step_ingest() -> None:
         if st.button("Use Demo Data", type="primary", use_container_width=True):
             df = _demo_data(2000)
             ss.raw_df = df
-            ss.dataset_name = "Telco Demo Dataset (2,000 rows × 42 cols)"
+            ss.dataset_name = "Zambia Telco Demo (2,000 rows × 44 cols · Zamtel focus)"
             ss.demo = True
             ss.target_col = "churn" if "churn" in df.columns else df.columns[-1]
             ss.cleaned_df = None
@@ -503,7 +1043,7 @@ def step_ingest() -> None:
                 file_name="telco_sample_data.csv",
                 mime="text/csv",
                 use_container_width=True,
-                help="500-row CSV with all 42 fields — upload it back to test every step",
+                help="500-row CSV with all 44 fields — upload it back to test every step",
             )
         else:
             st.caption("Sample CSV not found")
@@ -545,6 +1085,8 @@ def step_ingest() -> None:
         _kpi("Missing Cells", f"{int(df.isnull().sum().sum()):,}", "orange")
     with c4:
         _kpi("Duplicates", f"{int(df.duplicated().sum()):,}", "purple")
+
+    _render_market_snapshot(df, ss.target_col, expanded=True)
 
     st.subheader("Column Inventory")
     inv = pd.DataFrame({
@@ -699,6 +1241,101 @@ def step_eda() -> None:
                           x=pick, y="churn_rate", title=f"Churn Rate by {pick}")
             st.plotly_chart(fig5, use_container_width=True)
 
+    st.subheader("Tenure Cohort Analysis")
+    if "tenure_months" in df.columns and tgt in df.columns:
+        cohort_df = df.copy()
+        cohort_df["_tenure_bin"] = pd.cut(
+            cohort_df["tenure_months"],
+            bins=[0, 6, 12, 24, 48, 999],
+            labels=["0-6m", "6-12m", "12-24m", "24-48m", "48m+"],
+        )
+        cohort_churn = (
+            cohort_df.groupby("_tenure_bin", observed=True)[tgt]
+            .apply(lambda s: pd.to_numeric(s, errors="coerce").mean())
+            .reset_index()
+        )
+        cohort_churn.columns = ["Tenure Cohort", "Churn Rate"]
+        fig_cohort = px.bar(
+            cohort_churn, x="Tenure Cohort", y="Churn Rate",
+            text=cohort_churn["Churn Rate"].map(lambda x: f"{x:.1%}"),
+            color="Churn Rate", color_continuous_scale="Reds",
+            title="Churn Rate by Tenure Cohort",
+        )
+        fig_cohort.update_traces(textposition="outside")
+        st.plotly_chart(fig_cohort, use_container_width=True)
+        worst = cohort_churn.loc[cohort_churn["Churn Rate"].idxmax(), "Tenure Cohort"]
+        _insight(f"Highest churn cohort: **{worst}** — prioritise onboarding/early-life retention.")
+        ss.eda_insights.append(f"Highest churn tenure cohort: {worst}")
+
+        if "monthly_charges" in df.columns:
+            cohort_df["charges"] = pd.to_numeric(cohort_df["monthly_charges"], errors="coerce")
+            cohort_df["churn_num"] = pd.to_numeric(cohort_df[tgt], errors="coerce")
+            cohort_df["cohort_rar"] = cohort_df["charges"] * cohort_df["churn_num"]
+            rar_by_cohort = (
+                cohort_df.groupby("_tenure_bin", observed=True)["cohort_rar"]
+                .sum().reset_index()
+            )
+            rar_by_cohort.columns = ["Tenure Cohort", "Revenue Lost (actual)"]
+            fig_rar = px.bar(
+                rar_by_cohort, x="Tenure Cohort", y="Revenue Lost (actual)",
+                title="Actual Revenue Lost by Tenure Cohort (charges × churned)",
+                color="Revenue Lost (actual)", color_continuous_scale="Oranges",
+            )
+            st.plotly_chart(fig_rar, use_container_width=True)
+            total_lost = cohort_df["cohort_rar"].sum()
+            _insight(f"Observed revenue lost to churn in sample: **{_fmt_kwacha(total_lost)}**")
+            ss.analytics_kpis["observed_revenue_lost"] = float(total_lost)
+
+    st.subheader("Acquisition Channel Quality")
+    if "acquisition_channel" in df.columns and tgt in df.columns:
+        ch = df.groupby("acquisition_channel")[tgt].apply(
+            lambda s: pd.to_numeric(s, errors="coerce").mean()
+        ).reset_index()
+        ch.columns = ["Channel", "Churn Rate"]
+        ch = ch.sort_values("Churn Rate", ascending=False)
+        fig_ch = px.bar(
+            ch, x="Channel", y="Churn Rate",
+            color="Churn Rate", color_continuous_scale="RdYlGn_r",
+            title="Churn Rate by Acquisition Channel",
+        )
+        st.plotly_chart(fig_ch, use_container_width=True)
+        best_ch = ch.loc[ch["Churn Rate"].idxmin(), "Channel"]
+        worst_ch = ch.loc[ch["Churn Rate"].idxmax(), "Channel"]
+        _insight(f"Best channel: **{best_ch}** · Worst channel: **{worst_ch}**")
+        ss.eda_insights.append(f"Best acquisition channel: {best_ch}; worst: {worst_ch}")
+
+    if _operator_col(df):
+        st.subheader("Zambia Operator Snapshot")
+        op_kpis = _compute_operator_kpis(df, tgt)
+        oc1, oc2 = st.columns(2)
+        with oc1:
+            fig_op_churn = px.bar(
+                op_kpis, x="operator", y="churn_rate_pct", text_auto=".1f",
+                title="Churn Rate by Operator (%)",
+                color="operator",
+                color_discrete_map={"Zamtel": "#00695c", "MTN Zambia": "#ffcc00", "Airtel Zambia": "#e53935"},
+            )
+            st.plotly_chart(fig_op_churn, use_container_width=True)
+        with oc2:
+            fig_op_rev = px.bar(
+                op_kpis, x="operator", y="monthly_revenue", text_auto=".2s",
+                title="Monthly Revenue by Operator (K)",
+                color="operator",
+                color_discrete_map={"Zamtel": "#00695c", "MTN Zambia": "#ffcc00", "Airtel Zambia": "#e53935"},
+            )
+            st.plotly_chart(fig_op_rev, use_container_width=True)
+        if FOCUS_OPERATOR in op_kpis["operator"].values:
+            zam = op_kpis.loc[op_kpis["operator"] == FOCUS_OPERATOR].iloc[0]
+            _insight(
+                f"**{FOCUS_OPERATOR}** portfolio: {int(zam['subscribers']):,} subscribers · "
+                f"ARPU {_fmt_kwacha(zam['avg_arpu'])} · churn {zam.get('churn_rate_pct', 0):.1f}% · "
+                f"share {zam['market_share_pct']:.1f}% — see **Step 10** for full benchmarking."
+            )
+            ss.eda_insights.append(
+                f"{FOCUS_OPERATOR}: {int(zam['subscribers']):,} subs, ARPU {_fmt_kwacha(zam['avg_arpu'])}, "
+                f"churn {zam.get('churn_rate_pct', 0):.1f}%"
+            )
+
     if st.button("Complete EDA & Proceed →", type="primary"):
         _complete_step(2)
         st.rerun()
@@ -831,6 +1468,18 @@ def step_features() -> None:
     tgt = ss.target_col
     derived: list[str] = []
 
+    df = _derive_business_kpis(df)
+    if "estimated_clv" in df.columns:
+        derived.append("estimated_clv = monthly_charges × tenure_months (ZMW)")
+    if "rfm_recency" in df.columns:
+        derived.append("rfm_recency / rfm_frequency / rfm_monetary — RFM-style scores")
+    if "_target_payment_risk" in df.columns:
+        rate = df["_target_payment_risk"].mean()
+        derived.append(f"payment_risk target ({rate:.1%} positive)")
+    if "_target_upgrade" in df.columns:
+        rate = df["_target_upgrade"].mean()
+        derived.append(f"upgrade_propensity target ({rate:.1%} positive)")
+
     st.subheader("Derived KPI Features")
 
     if "monthly_charges" in df.columns and "data_volume_mb" in df.columns:
@@ -902,7 +1551,7 @@ def step_features() -> None:
             _warn(f"Excluded `{skip}` from encoding (identifier / date field).")
 
     st.subheader("Select Model Features")
-    exclude = {"subscriber_id", "msisdn", tgt} | _SKIP_ENCODE_COLS
+    exclude = {"subscriber_id", "msisdn", tgt, "_target_payment_risk", "_target_upgrade"} | _SKIP_ENCODE_COLS
     candidates = [c for c in df.columns if c not in exclude and c != tgt]
     default_sel = [c for c in candidates if c in ss.feature_cols] or candidates[:20]
     selected = st.multiselect("Features to include:", candidates, default=default_sel)
@@ -921,19 +1570,37 @@ def step_features() -> None:
 
         X_train, X_test, y_train, y_test = _safe_train_test_split(feat_df, target)
 
-        if scale_method == "StandardScaler":
-            scaler = StandardScaler()
-            cols = X_train.columns.tolist()
-            X_train = pd.DataFrame(scaler.fit_transform(X_train), columns=cols, index=X_train.index)
-            X_test = pd.DataFrame(scaler.transform(X_test), columns=cols, index=X_test.index)
-            _ok("Applied StandardScaler (fit on train, transform test).")
-
+        ss.imputer = None
+        ss.scaler = None
         if X_train.isnull().any().any() or X_test.isnull().any().any():
             imputer = SimpleImputer(strategy="median")
             cols = X_train.columns.tolist()
             X_train = pd.DataFrame(imputer.fit_transform(X_train), columns=cols, index=X_train.index)
             X_test = pd.DataFrame(imputer.transform(X_test), columns=cols, index=X_test.index)
+            ss.imputer = imputer
             _ok("Imputed remaining NaNs (fit on train only).")
+
+        if scale_method == "StandardScaler":
+            scaler = StandardScaler()
+            cols = X_train.columns.tolist()
+            X_train = pd.DataFrame(scaler.fit_transform(X_train), columns=cols, index=X_train.index)
+            X_test = pd.DataFrame(scaler.transform(X_test), columns=cols, index=X_test.index)
+            ss.scaler = scaler
+            _ok("Applied StandardScaler (fit on train, transform test).")
+
+        # Secondary targets aligned to the same split
+        ss.y_train_payment = ss.y_test_payment = None
+        ss.y_train_upgrade = ss.y_test_upgrade = None
+        if "_target_payment_risk" in df.columns:
+            ypay = _prepare_binary_target(df.loc[valid, "_target_payment_risk"], "_target_payment_risk")
+            if ypay is not None:
+                ss.y_train_payment = ypay.loc[X_train.index]
+                ss.y_test_payment = ypay.loc[X_test.index]
+        if "_target_upgrade" in df.columns:
+            yup = _prepare_binary_target(df.loc[valid, "_target_upgrade"], "_target_upgrade")
+            if yup is not None:
+                ss.y_train_upgrade = yup.loc[X_train.index]
+                ss.y_test_upgrade = yup.loc[X_test.index]
 
         ss.featured_df = df
         ss.feature_cols = selected
@@ -941,6 +1608,8 @@ def step_features() -> None:
         ss.X_test = X_test
         ss.y_train = y_train
         ss.y_test = y_test
+        ss.secondary_models = {}
+        ss.secondary_results = {}
         _ok(
             f"Train: {X_train.shape[0]:,} rows · Test: {X_test.shape[0]:,} rows · "
             f"{len(selected)} features"
@@ -1072,7 +1741,30 @@ def step_train() -> None:
             imp = pd.Series(rf.feature_importances_, index=X_train.columns).sort_values(ascending=False)
             ss.feature_importance = imp
 
-        _ok(f"{len(trained)} models trained successfully!")
+        _ok(f"{len(trained)} churn models trained successfully!")
+
+        # ── Secondary models: payment risk & upgrade propensity ───────────────
+        st.subheader("Secondary Predictions")
+        sec_models = {}
+        sec_results = {}
+        if ss.y_train_payment is not None and ss.y_test_payment is not None:
+            mdl, met = _train_secondary_rf(
+                X_train, X_test, ss.y_train_payment, ss.y_test_payment, "payment_risk"
+            )
+            if mdl and met:
+                sec_models["Payment Risk"] = mdl
+                sec_results["Payment Risk"] = met
+                _ok(f"Payment Risk model — ROC-AUC {met['roc_auc']:.3f} (positive rate {met['positive_rate']:.1%})")
+        if ss.y_train_upgrade is not None and ss.y_test_upgrade is not None:
+            mdl, met = _train_secondary_rf(
+                X_train, X_test, ss.y_train_upgrade, ss.y_test_upgrade, "upgrade"
+            )
+            if mdl and met:
+                sec_models["Upgrade Propensity"] = mdl
+                sec_results["Upgrade Propensity"] = met
+                _ok(f"Upgrade Propensity model — ROC-AUC {met['roc_auc']:.3f} (positive rate {met['positive_rate']:.1%})")
+        ss.secondary_models = sec_models
+        ss.secondary_results = sec_results
 
     if ss.model_results:
         st.subheader("Training Summary")
@@ -1091,6 +1783,15 @@ def step_train() -> None:
             fi.columns = ["Feature", "Importance"]
             fig = px.bar(fi, x="Importance", y="Feature", orientation="h", title="Top 15 Features")
             st.plotly_chart(fig, use_container_width=True)
+
+        if ss.secondary_results:
+            st.subheader("Secondary Model Scorecard")
+            sec_df = pd.DataFrame(ss.secondary_results).T.round(4)
+            st.dataframe(sec_df, use_container_width=True)
+            _insight(
+                "Payment Risk → proactive billing outreach · "
+                "Upgrade Propensity → upsell 5G/premium plans on stable subscribers."
+            )
 
         if st.button("Confirm Training & Proceed →", type="primary"):
             _complete_step(5)
@@ -1281,7 +1982,7 @@ SEGMENT_CAMPAIGNS = {
         "color": "reco-red",
     },
     "High-Risk / Low Usage": {
-        "product": "Starter Data Bundle 2 GB @ R29",
+        "product": "Starter Data Bundle 2 GB @ K45",
         "campaign": "Win-Back — Free 1GB data for 2 months",
         "urgency": "HIGH",
         "color": "reco-amber",
@@ -1343,44 +2044,124 @@ def step_recommendations() -> None:
             return "High-Risk / Service Issue"
         if p >= 0.65 and data_mb < 200:
             return "High-Risk / Low Usage"
-        if p >= 0.65 and charges > 600:
+        if p >= 0.65 and charges > HIGH_VALUE_KWACHA:
             return "High-Risk / High Value"
         if p >= 0.4:
             return "At-Risk"
         if tenure < 6:
             return "New Subscriber"
-        if data_mb > 3000 or charges > 500:
+        if data_mb > 3000 or charges > LOYAL_VALUE_KWACHA:
             return "Loyal / High Value"
         return "Stable / Standard"
 
     if st.button("Generate Recommendations", type="primary"):
-        probs = model.predict_proba(ss.X_test)[:, 1]
-        reco = ss.X_test.copy()
-        reco["churn_probability"] = probs.round(4)
+        # Score full subscriber base when featured matrix is available
+        if ss.featured_df is not None and ss.feature_cols:
+            score_df = ss.featured_df[ss.feature_cols].copy()
+            score_df = _apply_feature_pipeline(score_df)
+            probs = model.predict_proba(score_df)[:, 1]
+            reco = ss.featured_df.loc[score_df.index].copy()
+            reco["churn_probability"] = probs.round(4)
+        else:
+            score_df = ss.X_test.copy()
+            probs = model.predict_proba(score_df)[:, 1]
+            reco = score_df.copy()
+            reco["churn_probability"] = probs.round(4)
 
         src = ss.cleaned_df if ss.cleaned_df is not None else ss.raw_df
-        meta_cols = [c for c in [
-            "complaint_count", "data_volume_mb", "monthly_charges", "tenure_months",
-        ] if src is not None and c in src.columns]
+        meta_cols = [
+            c for c in [
+                "complaint_count", "data_volume_mb", "monthly_charges", "tenure_months",
+                "estimated_clv", "payment_failures", "days_overdue", "bill_shock_flag",
+            ] if src is not None and c in src.columns
+        ]
         for c in meta_cols:
             if c in reco.columns:
                 continue
-            if c in ss.X_test.columns:
-                reco[c] = ss.X_test[c].values
+            if c in score_df.columns:
+                reco[c] = score_df[c].values
             elif src is not None:
                 aligned = src.reindex(reco.index)
                 reco[c] = aligned[c].values
 
+        charges = pd.to_numeric(reco.get("monthly_charges", 0), errors="coerce").fillna(0)
+        reco["revenue_at_risk"] = (charges * reco["churn_probability"]).round(2)
+        if "estimated_clv" not in reco.columns and "monthly_charges" in reco.columns and "tenure_months" in reco.columns:
+            reco["estimated_clv"] = (charges * pd.to_numeric(reco["tenure_months"], errors="coerce").fillna(0)).round(2)
+
+        # Secondary model scores
+        if ss.secondary_models and ss.feature_cols:
+            base_X = (
+                ss.featured_df.loc[reco.index, ss.feature_cols].copy()
+                if ss.featured_df is not None else ss.X_test.copy()
+            )
+            sec_X = _apply_feature_pipeline(base_X)
+            if "Payment Risk" in ss.secondary_models:
+                reco["payment_risk_probability"] = ss.secondary_models["Payment Risk"].predict_proba(sec_X)[:, 1].round(4)
+            if "Upgrade Propensity" in ss.secondary_models:
+                reco["upgrade_probability"] = ss.secondary_models["Upgrade Propensity"].predict_proba(sec_X)[:, 1].round(4)
+
         reco["segment"] = reco.apply(_segment, axis=1)
+        reco["action_segment"] = reco.apply(_action_segment, axis=1)
         for field in ("product", "campaign", "urgency", "color"):
             reco[field] = reco["segment"].map(lambda s, f=field: SEGMENT_CAMPAIGNS[s][f])
 
         ss.recommendations_df = reco
+        total_rar = float(reco["revenue_at_risk"].sum())
         high_risk = int((reco["churn_probability"] >= 0.5).sum())
-        _ok(f"Scored {len(reco):,} subscribers — {high_risk:,} high-risk (P ≥ 50%).")
+        ss.analytics_kpis.update({
+            "total_revenue_at_risk": total_rar,
+            "high_risk_subscribers": high_risk,
+            "avg_clv": float(reco["estimated_clv"].mean()) if "estimated_clv" in reco.columns else None,
+        })
+        _ok(
+            f"Scored {len(reco):,} subscribers — {high_risk:,} high-risk · "
+            f"total revenue at risk **{_fmt_kwacha(total_rar)}**"
+        )
 
     if ss.recommendations_df is not None:
         reco = ss.recommendations_df
+
+        st.subheader("Revenue at Risk Dashboard")
+        rar_cols = st.columns(4)
+        total_rar = reco["revenue_at_risk"].sum()
+        rar_cols[0].metric("Total Revenue at Risk", _fmt_kwacha(total_rar))
+        rar_cols[1].metric("Avg RAR / Subscriber", _fmt_kwacha(reco["revenue_at_risk"].mean()))
+        save_n = int((reco["action_segment"] == "Save — High Value at Risk").sum()) if "action_segment" in reco.columns else 0
+        rar_cols[2].metric("Save List (high-value)", f"{save_n:,}")
+        if "estimated_clv" in reco.columns:
+            rar_cols[3].metric("Avg Estimated CLV", _fmt_kwacha(reco["estimated_clv"].mean()))
+
+        if "segment" in reco.columns:
+            seg_rar = (
+                reco.groupby("segment")["revenue_at_risk"].sum()
+                .sort_values(ascending=False).reset_index()
+            )
+            seg_rar.columns = ["Segment", "Revenue at Risk"]
+            fig_rar = px.bar(
+                seg_rar, x="Segment", y="Revenue at Risk",
+                color="Revenue at Risk", color_continuous_scale="Reds",
+                title="Revenue at Risk by Churn Segment",
+            )
+            st.plotly_chart(fig_rar, use_container_width=True)
+
+        if "action_segment" in reco.columns:
+            st.subheader("Action Segments — Save / Grow / Fix / Monitor")
+            act = reco["action_segment"].value_counts().reset_index()
+            act.columns = ["Action", "Subscribers"]
+            fig_act = px.pie(act, names="Action", values="Subscribers", title="Strategic Action Mix")
+            st.plotly_chart(fig_act, use_container_width=True)
+            for action in act["Action"]:
+                sub = reco[reco["action_segment"] == action]
+                hint = {
+                    "Save — High Value at Risk": "Immediate retention offer + dedicated agent",
+                    "Fix — Billing & Payment Risk": "Payment plan, bill explain, fee waiver review",
+                    "Grow — Upsell Ready": "5G/premium plan cross-sell campaign",
+                    "Watch — Elevated Churn Risk": "Proactive engagement + usage nudge",
+                    "Monitor — Stable": "Standard cross-sell only",
+                }.get(action, "Review segment rules")
+                _insight(f"**{action}** ({len(sub):,} subs): {hint}")
+
         st.subheader("Customer Segmentation")
         seg_counts = reco["segment"].value_counts().reset_index()
         seg_counts.columns = ["Segment", "Count"]
@@ -1403,7 +2184,9 @@ def step_recommendations() -> None:
         st.subheader("Scored Subscribers Preview")
         preview_cols = [
             c for c in [
-                "churn_probability", "segment", "complaint_count",
+                "churn_probability", "revenue_at_risk", "estimated_clv",
+                "payment_risk_probability", "upgrade_probability",
+                "segment", "action_segment", "complaint_count",
                 "data_volume_mb", "monthly_charges", "tenure_months",
                 "product", "campaign", "urgency",
             ] if c in reco.columns
@@ -1525,6 +2308,9 @@ def _generate_pptx() -> bytes:
     if ss.recommendations_df is not None:
         hi = int((ss.recommendations_df["churn_probability"] >= 0.5).sum())
         bullets.append(f"High-risk subscribers (P ≥ 50%): {hi:,}")
+        rar = ss.analytics_kpis.get("total_revenue_at_risk")
+        if rar:
+            bullets.append(f"Total revenue at risk: {_fmt_kwacha(rar)}")
     _ppt_bullet_slide(prs, "Executive Summary", bullets)
 
     if df is not None:
@@ -1586,6 +2372,19 @@ def _generate_pptx() -> bytes:
         _ppt_bullet_slide(prs, "Top Churn Drivers", bullets)
 
     if ss.recommendations_df is not None:
+        rar = ss.analytics_kpis.get("total_revenue_at_risk", ss.recommendations_df["revenue_at_risk"].sum())
+        avg_clv = ss.recommendations_df["estimated_clv"].mean() if "estimated_clv" in ss.recommendations_df.columns else None
+        rar_bullets = [
+            f"Total revenue at risk: {_fmt_kwacha(rar)}",
+            f"Average RAR per subscriber: {_fmt_kwacha(ss.recommendations_df['revenue_at_risk'].mean())}",
+        ]
+        if avg_clv is not None:
+            rar_bullets.append(f"Average estimated CLV: {_fmt_kwacha(avg_clv)}")
+        if "action_segment" in ss.recommendations_df.columns:
+            for act, cnt in ss.recommendations_df["action_segment"].value_counts().items():
+                rar_bullets.append(f"{act}: {cnt:,} subscribers")
+        _ppt_bullet_slide(prs, "Revenue at Risk & Action Segments", rar_bullets)
+
         seg = ss.recommendations_df.groupby("segment").agg(
             count=("churn_probability", "count"),
             mean=("churn_probability", "mean"),
@@ -1678,7 +2477,7 @@ def _generate_technical_pptx() -> bytes:
     ])
 
     _ppt_bullet_slide(prs, "Pipeline Architecture (9 Steps)", [
-        "Step 1 — Data Ingestion: CSV upload / demo dataset (42 telco fields).",
+        "Step 1 — Data Ingestion: CSV upload / demo dataset (44 Zambia telco fields incl. operator).",
         "Step 2 — EDA: distributions, correlations, class balance, missing-value audit.",
         "Step 3 — Cleaning: dedup, null imputation, type coercion, token normalisation.",
         "Step 4 — Feature Engineering: derived KPIs, encoding, train/test split, scaling.",
@@ -1757,6 +2556,25 @@ def _generate_technical_pptx() -> bytes:
         "A/B test retention campaigns by segment before full rollout.",
     ])
 
+    if ss.secondary_results:
+        headers = ["Model", "ROC-AUC", "F1", "Positive Rate"]
+        rows = [
+            [name, f"{m['roc_auc']:.3f}", f"{m['f1']:.3f}", f"{m['positive_rate']:.1%}"]
+            for name, m in ss.secondary_results.items()
+        ]
+        _ppt_table_slide(prs, "Secondary Models — Payment Risk & Upgrade Propensity", headers, rows)
+
+    _ppt_bullet_slide(prs, "Revenue at Risk & CLV Analytics", [
+        "estimated_clv = monthly_charges × tenure_months",
+        "revenue_at_risk = monthly_charges × P(churn) per subscriber",
+        "Action segments: Save (high RAR) · Fix (payment risk) · Grow (upsell) · Monitor",
+        *(
+            [f"Total RAR in latest run: {_fmt_kwacha(ss.analytics_kpis['total_revenue_at_risk'])}"]
+            if ss.analytics_kpis.get("total_revenue_at_risk") else
+            ["Run Step 8 to compute portfolio RAR"]
+        ),
+    ])
+
     if ss.feature_importance is not None:
         headers = ["Feature", "Importance"]
         rows = [[f, f"{v:.4f}"] for f, v in ss.feature_importance.head(12).items()]
@@ -1766,7 +2584,7 @@ def _generate_technical_pptx() -> bytes:
         "Rule engine maps probability + usage KPIs to 7 segments:",
         "  P ≥ 0.65 & complaints ≥ 3  →  High-Risk / Service Issue",
         "  P ≥ 0.65 & low data usage  →  High-Risk / Low Usage",
-        "  P ≥ 0.65 & charges > R600  →  High-Risk / High Value",
+        f"  P ≥ 0.65 & charges > K{HIGH_VALUE_KWACHA}  →  High-Risk / High Value",
         "  P ≥ 0.40                   →  At-Risk",
         "  tenure < 6 months          →  New Subscriber",
         "  high usage / charges       →  Loyal / High Value  |  else Stable / Standard",
@@ -1828,7 +2646,7 @@ def step_story() -> None:
         f"""
 <div style="background:linear-gradient(135deg,#1565c0,#0d47a1);
     color:#fff;border-radius:16px;padding:28px 32px;margin-bottom:24px;">
-  <h2 style="margin:0 0 6px 0;">📡 Telecom Subscriber Analytics</h2>
+  <h2 style="margin:0 0 6px 0;">📡 Zambia Telco Subscriber Analytics</h2>
   <p style="margin:0;opacity:.85;font-size:1rem;">
     Executive Data Story — {ss.dataset_name} &nbsp;·&nbsp; {datetime.now().strftime("%B %Y")}
     &nbsp;·&nbsp; Download the PowerPoint deck below for stakeholder presentations
@@ -1861,11 +2679,8 @@ def step_story() -> None:
         )
         _kpi("Best ROC-AUC", f"{ss.model_results[best]['roc_auc']:.3f}" if best else "N/A", "purple")
     with k5:
-        hi = (
-            int((ss.recommendations_df["churn_probability"] >= 0.5).sum())
-            if ss.recommendations_df is not None else 0
-        )
-        _kpi("High-Risk Subs", f"{hi:,}", "orange")
+        rar = ss.analytics_kpis.get("total_revenue_at_risk")
+        _kpi("Revenue at Risk", _fmt_kwacha(rar) if rar else "N/A", "orange")
 
     st.subheader("Pipeline Journey")
     journey = []
@@ -1879,6 +2694,7 @@ def step_story() -> None:
         7: "Bias diagnostics available" if ss.models else "Pending bias check",
         8: "Segments assigned" if ss.recommendations_df is not None else "Pending recommendations",
         9: "Executive story ready" if 9 in ss.steps_done else "Pending export",
+        10: "Market KPIs monitored" if 10 in ss.steps_done else "Pending market intelligence",
     }
     for num, icon, label in STEPS:
         status = "✅ Complete" if num in ss.steps_done else "○ Pending"
@@ -1922,6 +2738,12 @@ def step_story() -> None:
         for insight in ss.eda_insights:
             _insight(insight)
 
+    if _operator_col(df):
+        st.subheader("Zambia Market KPI Summary")
+        op_kpis = _compute_operator_kpis(df, tgt)
+        _render_market_kpi_cards(op_kpis, ss.focus_operator or FOCUS_OPERATOR)
+        st.dataframe(op_kpis.round(2), use_container_width=True, hide_index=True)
+
     if ss.model_results:
         st.subheader("Model Scorecard")
         summary = pd.DataFrame({
@@ -1939,15 +2761,23 @@ def step_story() -> None:
 
     if ss.recommendations_df is not None:
         st.subheader("Segment Snapshot")
-        seg = ss.recommendations_df.groupby("segment").agg(
+        reco_story = ss.recommendations_df
+        seg = reco_story.groupby("segment").agg(
             subscribers=("churn_probability", "count"),
             avg_prob=("churn_probability", "mean"),
+            **({"total_rar": ("revenue_at_risk", "sum")} if "revenue_at_risk" in reco_story.columns else {}),
         ).reset_index()
         st.dataframe(seg.round(3), use_container_width=True, hide_index=True)
+        hi = int((reco_story["churn_probability"] >= 0.5).sum())
+        rar = ss.analytics_kpis.get("total_revenue_at_risk", 0)
         _insight(
-            f"**{int((ss.recommendations_df['churn_probability'] >= 0.5).sum()):,} subscribers** "
-            "have a churn probability ≥ 50% and should be prioritised for retention campaigns immediately."
+            f"**{hi:,} subscribers** have P(churn) ≥ 50%. "
+            f"Total revenue at risk: **{_fmt_kwacha(rar)}**."
         )
+
+    if ss.secondary_results:
+        st.subheader("Secondary Predictions")
+        st.dataframe(pd.DataFrame(ss.secondary_results).T.round(4), use_container_width=True)
 
     st.subheader("Documentation & Methodology")
     with st.expander("Pipeline Methodology Reference", expanded=False):
@@ -1955,7 +2785,8 @@ def step_story() -> None:
             """
 **Step 1 — Data Ingestion**  
 Upload CSV/Excel, load 2,000-row demo data, or download the 500-row sample CSV.  
-42 telco fields spanning identity, subscription, usage, network KPIs, CX, billing, and loyalty.
+44 telco fields spanning identity, market (operator, report_month), subscription, usage,
+network KPIs, CX, billing, and loyalty — localised for Zambia (ZMW, NRC, MSISDN).
 
 **Step 2 — Exploratory Data Analysis**  
 Descriptive statistics, target distribution (bar chart uses column name for colour),  
@@ -2055,10 +2886,74 @@ Executive UI, `_generate_pptx` (executive deck), `_generate_technical_pptx` (tec
             use_container_width=True,
         )
 
-    if st.button("Mark Pipeline Complete ✅", type="primary"):
+    if st.button("Proceed to Market Intelligence →", type="primary"):
         _complete_step(9)
+        st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 10 — MARKET INTELLIGENCE
+# ─────────────────────────────────────────────────────────────────────────────
+def step_market() -> None:
+    _step_header(
+        10, "Market Intelligence",
+        "Monitor key KPIs (subscriber base, revenue, ARPU, churn, NPS) and benchmark "
+        f"**{FOCUS_OPERATOR}** against **MTN Zambia** and **Airtel Zambia** — "
+        "portfolio metrics plus national market reference gaps.",
+    )
+    if ss.raw_df is None:
+        st.warning("Complete Step 1 first.")
+        return
+
+    df = ss.raw_df.copy()
+    tgt = ss.target_col
+    op_kpis = _compute_operator_kpis(df, tgt)
+    ss.market_kpis = op_kpis.to_dict("records") if not op_kpis.empty else {}
+
+    st.subheader("KPI Monitor")
+    focus_opts = list(op_kpis["operator"]) if not op_kpis.empty else list(ZAMBIA_OPERATORS)
+    focus = st.selectbox(
+        "Focus operator for KPI cards",
+        focus_opts,
+        index=focus_opts.index(ss.focus_operator) if ss.focus_operator in focus_opts else 0,
+        key="market_step_focus",
+    )
+    ss.focus_operator = focus
+    _render_market_kpi_cards(op_kpis, focus)
+
+    total_subs = int(op_kpis["subscribers"].sum()) if not op_kpis.empty else len(df)
+    total_rev = float(op_kpis["monthly_revenue"].sum()) if not op_kpis.empty else 0
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Portfolio Subscribers", f"{total_subs:,}")
+    m2.metric("Total Monthly Revenue", _fmt_kwacha(total_rev))
+    if not op_kpis.empty and tgt in df.columns:
+        m3.metric("Portfolio Churn Rate", f"{op_kpis['churn_rate'].mean() * 100:.1f}%")
+    if "report_month" in df.columns:
+        m4.metric("Reporting Periods", df["report_month"].nunique())
+
+    _render_operator_benchmark_charts(df, tgt)
+
+    st.subheader("KPI Alert Thresholds")
+    if not op_kpis.empty and FOCUS_OPERATOR in op_kpis["operator"].values:
+        zam = op_kpis.loc[op_kpis["operator"] == FOCUS_OPERATOR].iloc[0]
+        ref = ZAMBIA_MARKET_REFERENCE.set_index("operator").loc[FOCUS_OPERATOR]
+        alerts = []
+        if zam.get("churn_rate_pct", 0) > ref["churn_rate_pct"]:
+            alerts.append(f"Churn above national reference ({zam['churn_rate_pct']:.1f}% vs {ref['churn_rate_pct']:.1f}%)")
+        if zam.get("avg_arpu", 0) < ref["monthly_arpu_kwacha"]:
+            alerts.append(f"ARPU below national reference ({_fmt_kwacha(zam['avg_arpu'])} vs {_fmt_kwacha(ref['monthly_arpu_kwacha'])})")
+        if zam.get("avg_nps", 100) < ref["nps"]:
+            alerts.append(f"NPS below national reference ({zam['avg_nps']:.0f} vs {ref['nps']:.0f})")
+        if alerts:
+            for a in alerts:
+                _warn(a)
+        else:
+            _ok(f"{FOCUS_OPERATOR} is within national reference thresholds on monitored KPIs.")
+
+    if st.button("Mark Pipeline Complete ✅", type="primary"):
+        _complete_step(10)
         st.balloons()
-        st.success("🎉 Telco Data Science Pipeline complete!")
+        st.success("🎉 Zambia Telco Analytics Pipeline complete!")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2074,7 +2969,9 @@ STEP_FNS = {
     7: step_bias,
     8: step_recommendations,
     9: step_story,
+    10: step_market,
 }
 
-_nav_sidebar()
-STEP_FNS[ss.current_step if ss.current_step in STEP_FNS else len(STEPS)]()
+if __name__ == "__main__":
+    _nav_sidebar()
+    STEP_FNS[ss.current_step if ss.current_step in STEP_FNS else len(STEPS)]()
